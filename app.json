@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "TshongLa 2.0",
+    "slug": "tshongla-2",
+    "scheme": "tshongla2",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow TshongLa to show nearby handmade shops."
+        }
+      ]
+    ],
+    "android": {
+      "package": "com.karmagbyte.tshongla2",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ]
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Show nearby handmade shops."
+      }
+    }
+  }
+}
