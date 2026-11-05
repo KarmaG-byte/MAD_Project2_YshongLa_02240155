@@ -1,43 +1,71 @@
-# TshongLa 2.0 — Project II (React Native + Expo)
+# TshongLa 2.0 — React Native / Expo Marketplace
 
-This is an **early development scaffold**, not a completed or tested application. The original Kotlin/Jetpack Compose Project I remains untouched on the `main` branch. Project II code lives in the `project2-expo/` folder of the `project2-expo` branch.
+TshongLa 2 is the cross-platform continuation of the Bhutanese handmade marketplace. It uses **Expo SDK 54**, **Firebase Authentication**, **Cloud Firestore**, optional **Firebase Storage**, and native maps.
 
-## Current implementation
-- Expo Router / TypeScript React Native starter.
-- Firebase email/password registration and sign-in, with customer/shopkeeper role selection.
-- Firestore listeners for product listings and booking records.
-- Product raw-material/ingredient display and shopkeeper product creation form.
-- Shop coordinates, foreground GPS permission and map pins (react-native-maps).
-- Account sign-out.
+## Features implemented in source
 
-## Important incomplete work
-- **Reservations are intentionally disabled** until Project I's Firestore transaction and stock consistency are migrated and tested.
-- Product edit/delete, ratings, CID and phone verification, image upload, notifications, QR pickup, chat, and advanced distance filtering are not implemented.
-- Project I's Firestore security rules may **reject** new product writes and shop-location updates. Rules must be reviewed and updated securely before testing; never loosen them to allow unrestricted writes.
-- Existing Project I product documents use numeric document IDs and a different field schema. The new UI can read compatible fields but a schema migration/adapter and testing are still needed.
-- The map needs platform-specific validation; some builds require a Google Maps API key. No billing-free guarantee is implied.
-- No production security review or Android/iOS build test has been completed.
+### Customer
+- Email/password registration, sign-in, password reset and sign-out.
+- Searchable products with images, prices, raw materials, descriptions and stock.
+- **Reserve 1 unit** with a Firestore transaction that decrements stock.
+- See reservation status; cancel a **pending** reservation and return stock.
+- View shop pins and opening schedules; filter nearby shops by 5, 20 or 100 km (straight-line distance), or view all.
+- Open shop coordinates in an external maps app.
 
-## Local setup
-1. Check out branch `project2-expo` and open its `project2-expo` folder.
-2. Install Node.js LTS and run `npm install`.
-3. In Firebase Console, register a **Web App** in your existing Firebase project to obtain the JavaScript SDK configuration. This is separate from Android's `google-services.json`.
-4. Copy `.env.example` to `.env` and fill the `EXPO_PUBLIC_FIREBASE_...` values. These identify the Firebase project and are not admin credentials; **never put service-account private keys in the app**.
-5. Enable Firebase Authentication email/password and ensure Cloud Firestore exists.
-6. Run `npx expo start` and open in Expo Go if supported. If the map or another native module requires it, use an Expo development build.
-7. Confirm and test Firestore Security Rules for role-based access before attempting writes.
+### Shopkeeper
+- Register/sign in and manage a public shop profile.
+- Set shop name, address, Dzongkhag, phone, opening time, closing time and closed days.
+- Save the device's current GPS position as the **fixed shop location**.
+- Create and edit products, including materials, prices and stock.
+- Add a **public HTTPS image URL**, or select a phone photo for optional Firebase Storage upload.
+- **Remove** products by archiving them (active=false) and restore them later. Existing reservations remain intact.
+- View orders, **confirm/reject pending reservations** and mark confirmed orders as **collected**. Rejection returns stock.
 
-## Four-week target
-- Week 1: app setup, login, roles, Firestore schema review.
-- Week 2: product CRUD, materials, booking transaction.
-- Week 3: GPS map, distance filters, seller shop coordinates.
-- Week 4: end-to-end testing, security rules, UI polish and documentation.
+### Data and security
+- Transaction routines in src/marketplace.ts handle coordinated stock changes.
+- Role-sensitive Firestore rules in firestore.rules; upload rules in storage.rules.
+- Compatibility adapter reads common field variations from Project I; records lacking sellerId cannot be reserved until migrated.
+- Burgundy-and-cream interface in app/index.tsx.
 
-## Data model proposals
-`users/{uid}`: role, name, shopName, address, latitude, longitude.
+## Getting started
 
-`products/{id}`: name, sellerId, price, stock, description, materials, dzongkhag.
+1. Open the repository folder in VS Code.
+2. Run **npm install**.
+3. Verify firebase.ts uses the existing TshongLa Firebase Web App configuration. It currently targets project tshongla-77361.
+4. Firebase Console → Authentication → Sign-in method → enable **Email/Password**.
+5. Ensure Cloud Firestore exists.
+6. **Back up and review your existing rules before deploying.** Firebase Console → Firestore Database → Rules → review and paste contents of firestore.rules → Publish. These rules target Project II and **may break older Project I access patterns**; reconcile them if Project I must keep working.
+7. For selecting/uploading **phone photos**, Firebase Storage must be available. Review and deploy storage.rules in Firebase Console → Storage → Rules. Storage provisioning may require enabling the **Blaze billing plan**; do not enable billing without checking costs. Public **HTTPS image URLs** work without Storage.
+8. Run **npx expo install --check**, then **npx expo start --clear**.
+9. Open Expo Go and test separate customer/shopkeeper accounts.
 
-`bookings/{id}`: customerId, sellerId, productId, status, quantity, pickupCode.
+## Firestore data structure
 
-Use server-side Firestore rules to enforce ownership and booking transitions. GPS is foreground-only; shop location is a fixed coordinate, not continuous tracking.
+- users/{uid}: private account profile (uid, name, email, role).
+- shops/{uid}: **public** business profile (name, address, dzongkhag, phone, hours, closedDays, latitude, longitude).
+- products/{autoId}: name, description, materials, category, price, stock, sellerId, seller, dzongkhag, imageUrl, active, lastBookingId.
+- bookings/{autoId}: productId, productName, customerId, sellerId, names, unitPrice, quantity=1, status, createdAt, updatedAt.
+
+Reservation flow: pending → confirmed → collected, or pending → rejected/cancelled. Stock is decremented on reservation, and restored on rejection or cancellation in the **same Firestore transaction**. Only pending reservations can be cancelled by customers.
+
+**Important:** Committing firestore.rules to GitHub does **not** deploy these rules to Firebase. If outdated rules remain active, writes can fail with permission-denied. Never set unrestricted security rules to work around this.
+
+## Project I compatibility
+
+The Project I GitHub main README describes demo products, and its data model differs from Project II. Reusing one Firebase project does not automatically migrate every product or user. Existing Email/Password Auth users may sign in, but must have a compatible users/{uid} profile. Products without a seller ID cannot be reserved safely until migrated. Shopkeepers can add their own public shops/{uid} profile and GPS marker.
+
+## Testing before submission
+
+After npm install, run **npm run typecheck** and **npx expo install --check**. Test with two separate accounts: register and sign in, save shop/hours/GPS, publish and edit product, archive and restore, reserve 1 unit, confirm, mark collected, cancel/reject another pending reservation, verify stock restoration, use maps and distance, test image URLs. Only test Storage uploads if Storage is enabled and rules deployed.
+
+Inspect Firestore documents after each reservation action. Confirm rule permissions and actual device behavior before demonstrating.
+
+## Current limitations
+
+- No payment processing, shopping cart checkout, chat, ratings, identity verification, push notifications, shop moderation, or admin console.
+- Google Maps may require platform-specific configuration in production builds; Expo Go behavior can differ across devices.
+- Shop pins are fixed coordinates entered by the seller, not continuous location tracking.
+- Open/closed indication uses **device-local time**, not a live business status service.
+- Public product photos must be appropriate for public viewing.
+- Firebase Security Rules must be reviewed against Project I before deployment.
+- **Source implementation is committed, but real Firebase end-to-end and device testing are still required.**
