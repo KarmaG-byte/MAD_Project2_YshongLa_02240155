@@ -425,8 +425,8 @@ export default function Home() {
             <Info title="Materials / ingredients" detail={p.materials || 'Not listed yet'} />
             <Text style={styles.muted}>Available stock: {p.stock}</Text>
             <Button title={busy ? 'Please wait…' : p.stock > 0 ? 'Reserve for pickup' : 'Out of stock'}
-              disabled={busy || p.stock < 1 || !p.sellerId} onPress={() => book(p)} />
-            {!p.sellerId && <Text style={styles.muted}>Older listing: shopkeeper must update seller information before booking.</Text>}
+              disabled={busy || p.stock < 1 || !p.sellerId || p.schemaVersion !== 2} onPress={() => book(p)} />
+            {p.schemaVersion !== 2 && <Text style={styles.muted}>TshongLa 1 product: browse here, but reserve through the original app to preserve its stock and verification.</Text>}
           </View>)}
         </>}
 
@@ -457,8 +457,9 @@ export default function Home() {
             <Text style={styles.title}>{p.name} {p.active ? '' : '(Removed)'}</Text>
             <Text style={styles.price}>Nu. {p.price.toFixed(2)} · {p.stock} in stock</Text>
             <Info title="Materials / ingredients" detail={p.materials || 'Not specified'} />
-            <View style={styles.row}><Button title="Edit" onPress={() => startEdit(p)} />
-              <Button secondary title={p.active ? 'Remove' : 'Restore'} onPress={() => toggleListing(p)} /></View>
+            {p.schemaVersion === 2 ? <View style={styles.row}><Button title="Edit" onPress={() => startEdit(p)} />
+              <Button secondary title={p.active ? 'Remove' : 'Restore'} onPress={() => toggleListing(p)} /></View> :
+              <Text style={styles.muted}>Legacy TshongLa 1 product: manage this listing in TshongLa 1.</Text>}
           </View>)}
         </>}
 
