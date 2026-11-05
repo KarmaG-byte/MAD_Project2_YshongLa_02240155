@@ -172,15 +172,10 @@ service cloud.firestore {
     }
 
     match /users/{uid} {
-      allow get: if isSelf(uid);
-      allow list: if false;
-      allow create: if isSelf(uid)
-        && request.resource.data.role in ['customer', 'shopkeeper']
-        && request.resource.data.uid == uid;
-      allow update: if isSelf(uid)
-        && request.resource.data.role == resource.data.role
-        && request.resource.data.uid == resource.data.uid;
-      allow delete: if false;
+      // TshongLa 1 profiles may not contain a uid field. Preserve owner reads
+      // and updates while the existing app performs phone/CID verification.
+      allow create, get, update: if isSelf(uid);
+      allow list, delete: if false;
     }
     match /shops/{uid} {
       allow read: if true; // This collection contains only public business details.
