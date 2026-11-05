@@ -537,7 +537,7 @@ export default function Home() {
 
         {tab === 'My shop' && profile.role === 'shopkeeper' && <>
           <Text style={styles.title}>Shop profile and hours</Text>
-          {user && <View style={styles.card}><ShopReviews shopId={user.uid} reviews={reviews} /></View>
+          {user && <View style={styles.card}><ShopReviews shopId={user.uid} reviews={reviews} /></View>}
           <Text style={styles.muted}>Customers see your shop's public details, opening hours and saved map position.</Text>
           <View style={styles.card}>
             <Field label="Shop name" value={shopForm.name} onChange={v => setShopForm(s => ({ ...s, name: v }))} />
