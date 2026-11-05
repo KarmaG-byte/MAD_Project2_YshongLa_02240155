@@ -29,6 +29,10 @@ TshongLa 2 is the cross-platform continuation of the Bhutanese handmade marketpl
 - Compatibility adapter reads common field variations from Project I; records lacking sellerId cannot be reserved until migrated.
 - Burgundy-and-cream interface in app/index.tsx.
 
+## TshongLa 1 compatibility and Firebase rules
+
+The merged firestore.rules retains Project I verification and capitalized booking statuses. New Project II products and reservations use schemaVersion: 2 so they cannot modify original inventory. Existing Project I listings are visible but read-only in Project II. The merged rules are a proposal until you publish them in Firebase Console and test both apps; back up the current live rules first.
+
 ## Getting started
 
 1. Open the repository folder in VS Code.
