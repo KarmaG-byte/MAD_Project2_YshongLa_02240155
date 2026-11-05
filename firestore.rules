@@ -183,20 +183,41 @@ service cloud.firestore {
       allow delete: if false;
     }
     match /products/{pid} {
-      allow read: if true;
-      allow create: if signedIn()
+      allow read: if signedIn();
+      allow create: if (
+        !v2Product(request.resource.data)
+        && isVerifiedShopkeeper()
+        && request.resource.data.sellerId == request.auth.uid
+      ) || (
+        v2Product(request.resource.data)
         && seller(request.auth.uid)
         && request.resource.data.sellerId == request.auth.uid
-        && validProduct(request.resource.data);
-      allow update: if
-        (signedIn() && seller(request.auth.uid)
-         && resource.data.sellerId == request.auth.uid
-         && request.resource.data.sellerId == resource.data.sellerId
-         && validProduct(request.resource.data))
-        || productReservation(pid)
-        || productRestock(pid);
-      // "Remove" in the app archives rather than hard-deleting, retaining booking history.
-      allow delete: if false;
+        && validProduct(request.resource.data)
+      );
+      allow update: if (
+        // Original TshongLa 1 documents keep their own verification model.
+        !v2Product(resource.data) && !v2Product(request.resource.data)
+        && signedIn() && (
+          resource.data.sellerId == request.auth.uid
+          || (isVerifiedCustomer()
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stock'])
+              && request.resource.data.stock >= 0
+              && request.resource.data.stock < resource.data.stock)
+          || (isVerifiedCustomer()
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['rating', 'ratingCount', 'ratingSum', 'updatedAt']))
+        )
+      ) || (
+        // TshongLa 2 listings are editable only by the matching shopkeeper.
+        v2Product(resource.data) && v2Product(request.resource.data)
+        && seller(request.auth.uid)
+        && resource.data.sellerId == request.auth.uid
+        && request.resource.data.sellerId == resource.data.sellerId
+        && validProduct(request.resource.data)
+      ) || productReservation(pid) || productRestock(pid);
+      allow delete: if signedIn()
+        && !v2Product(resource.data)
+        && resource.data.sellerId == request.auth.uid;
     }
     match /bookings/{bid} {
       allow get, list: if signedIn()
