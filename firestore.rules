@@ -90,6 +90,7 @@ service cloud.firestore {
         && data.createdAt == request.time
         && data.updatedAt == request.time
         && exists(pp)
+        && v2Product(get(pp).data)
         && get(pp).data.active == true
         && get(pp).data.stock is int && get(pp).data.stock >= 1
         && data.sellerId == get(pp).data.sellerId
@@ -100,11 +101,13 @@ service cloud.firestore {
     function bookingRestocked(bid) {
       let pp = productPath(resource.data.productId);
       return exists(pp)
+        && v2Product(get(pp).data)
         && getAfter(pp).data.stock == get(pp).data.stock + 1
         && getAfter(pp).data.lastBookingId == bid;
     }
     function validBookingTransition(bid) {
       return signedIn()
+        && v2Booking(resource.data) && v2Booking(request.resource.data)
         && request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['status', 'updatedAt'])
         && request.resource.data.updatedAt == request.time
