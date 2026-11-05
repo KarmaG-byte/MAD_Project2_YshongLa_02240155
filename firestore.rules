@@ -17,6 +17,11 @@ service cloud.firestore {
         && currentUser().data.cidImageUri is string
         && currentUser().data.cidImageUri.size() > 0;
     }
+    function v2Customer() {
+      return signedIn()
+        && exists(userPath(request.auth.uid))
+        && get(userPath(request.auth.uid)).data.role == 'customer';
+    }
     function v2Product(data) { return data.get('schemaVersion', 1) == 2; }
     function v2Booking(data) { return data.get('schemaVersion', 1) == 2; }
     function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
@@ -78,7 +83,7 @@ service cloud.firestore {
     function bookingCreatedCorrectly(bid) {
       let data = request.resource.data;
       let pp = productPath(data.productId);
-      return signedIn()
+      return v2Customer()
         && data.keys().hasOnly([
           'schemaVersion', 'productId', 'productName', 'customerId', 'customerName',
           'sellerId', 'sellerName', 'quantity', 'unitPrice',
@@ -94,6 +99,7 @@ service cloud.firestore {
         && get(pp).data.active == true
         && get(pp).data.stock is int && get(pp).data.stock >= 1
         && data.sellerId == get(pp).data.sellerId
+        && data.sellerId != request.auth.uid
         && data.unitPrice == get(pp).data.price
         && getAfter(pp).data.stock == get(pp).data.stock - 1
         && getAfter(pp).data.lastBookingId == bid;
@@ -151,7 +157,7 @@ service cloud.firestore {
         && exists(booking)
         && get(booking).data.customerId == request.auth.uid
         && get(booking).data.sellerId == data.shopId
-        && get(booking).data.status == 'collected'
+        && get(booking).data.status in ['collected', 'Collected']
         && data.rating is int && data.rating >= 1 && data.rating <= 5
         && data.comment is string
         && data.comment.size() >= 10 && data.comment.size() <= 500;
