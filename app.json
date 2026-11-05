@@ -13,6 +13,13 @@
         {
           "locationWhenInUsePermission": "Allow TshongLa to show nearby handmade shops."
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow TshongLa to select photos for your product listings.",
+          "cameraPermission": "Allow TshongLa to photograph products."
+        }
       ]
     ],
     "android": {
