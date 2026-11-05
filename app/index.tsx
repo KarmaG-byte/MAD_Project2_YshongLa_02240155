@@ -16,6 +16,7 @@ import {
   collection, doc, getDoc, onSnapshot, query, serverTimestamp, setDoc, where,
 } from 'firebase/firestore';
 import { auth, db } from '../firebase';
+import { normalizeShopReview, ratingSummary, saveShopReview, starText, type ShopReview } from '../src/shopReviews';
 import {
   distanceKm, isShopOpen, normalizeBooking, normalizeProduct, normalizeProfile,
   normalizeShop, reserveProduct, saveProduct, setProductActive, transitionBooking,
@@ -63,6 +64,24 @@ function Info({ title, detail }: { title: string; detail: string }) {
 }
 function errorText(e: unknown) { return e instanceof Error ? e.message : String(e); }
 
+function ShopReviews({ shopId, reviews }: { shopId: string; reviews: ShopReview[] }) {
+  const summary = ratingSummary(reviews, shopId);
+  const shopReviews = reviews.filter(r => r.shopId === shopId).sort((a, b) =>
+    (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+  return <View style={styles.reviewSection}>
+    <Text style={styles.fieldLabel}>Customer ratings and reviews</Text>
+    <Text style={styles.price}>{summary.count
+      ? starText(summary.average) + '  ' + summary.average.toFixed(1) + '/5 · ' + summary.count + ' review' + (summary.count === 1 ? '' : 's')
+      : 'No ratings yet'}</Text>
+    {shopReviews.length === 0
+      ? <Text style={styles.muted}>Reviews from customers with collected reservations will appear here.</Text>
+      : shopReviews.map(review => <View style={styles.reviewItem} key={review.id}>
+          <Text style={styles.fieldLabel}>{starText(review.rating)} · {review.customerName}</Text>
+          <Text style={styles.body}>{review.comment}</Text>
+        </View>)}
+  </View>;
+}
+
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
@@ -79,6 +98,11 @@ export default function Home() {
   const [products, setProducts] = useState<Product[]>([]);
   const [shops, setShops] = useState<Shop[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [reviews, setReviews] = useState<ShopReview[]>([]);
+  const [reviewing, setReviewing] = useState<Booking | null>(null);
+  const [reviewStars, setReviewStars] = useState(5);
+  const [reviewComment, setReviewComment] = useState('');
+  const [selectedShopId, setSelectedShopId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [radius, setRadius] = useState(20);
   const [coordinates, setCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -109,7 +133,10 @@ export default function Home() {
     const stopShops = onSnapshot(collection(db, 'shops'),
       snap => setShops(snap.docs.map(d => normalizeShop(d.id, d.data()))),
       e => setMessage('Shops: ' + e.message));
-    return () => { stopProducts(); stopShops(); };
+    const stopReviews = onSnapshot(collection(db, 'shopReviews'),
+      snap => setReviews(snap.docs.map(d => normalizeShopReview(d.id, d.data()))),
+      e => setMessage('Shop reviews: ' + e.message));
+    return () => { stopProducts(); stopShops(); stopReviews(); };
   }, [user?.uid]);
   useEffect(() => {
     if (!user || !profile) return;
@@ -288,6 +315,33 @@ export default function Home() {
           finally { setBusy(false); }
         } }]);
   }
+  function beginReview(b: Booking) {
+    if (profile?.role !== 'customer' || b.status !== 'collected' || !b.sellerId) return;
+    const existing = reviews.find(r => r.shopId === b.sellerId && r.customerId === user?.uid);
+    setReviewStars(existing?.rating || 5);
+    setReviewComment(existing?.comment || '');
+    setReviewing(b);
+  }
+  async function submitReview() {
+    if (!reviewing || !user || !profile || profile.role !== 'customer' || reviewing.status !== 'collected') return;
+    const existing = reviews.find(r => r.shopId === reviewing.sellerId && r.customerId === user.uid);
+    setBusy(true);
+    try {
+      await saveShopReview({
+        shopId: reviewing.sellerId, customerId: user.uid, customerName: profile.name,
+        bookingId: reviewing.id, rating: reviewStars, comment: reviewComment, existingReview: existing,
+      });
+      setReviewing(null);
+      Alert.alert('Review saved', 'Your rating and comment are now visible to other TshongLa customers.');
+    } catch (e) { Alert.alert('Could not save review', errorText(e)); }
+    finally { setBusy(false); }
+  }
+  function showShopReviews(shopId: string) {
+    setSelectedShopId(shopId);
+    setRadius(0);
+    setTab('Nearby');
+  }
+
   function changeStatus(b: Booking, status: 'confirmed' | 'rejected' | 'cancelled' | 'collected') {
     const label = status === 'rejected' || status === 'cancelled' ? 'This releases the reserved stock.' : '';
     Alert.alert('Update reservation', 'Set status to ' + status + '? ' + label,
@@ -303,11 +357,14 @@ export default function Home() {
     return p.active && (p.name + ' ' + p.category + ' ' + p.dzongkhag).toLowerCase().includes(search.toLowerCase());
   }), [products, profile?.role, user?.uid, search]);
   const nearby = useMemo(() => shops
-    .filter(s => s.latitude !== undefined && s.longitude !== undefined)
-    .map(s => ({ ...s, distance: coordinates
-      ? distanceKm(coordinates.latitude, coordinates.longitude, s.latitude!, s.longitude!) : undefined }))
+    .map(s => ({ ...s, distance: coordinates && s.latitude !== undefined && s.longitude !== undefined
+      ? distanceKm(coordinates.latitude, coordinates.longitude, s.latitude, s.longitude) : undefined }))
     .filter(s => s.distance === undefined || radius === 0 || s.distance <= radius)
-    .sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0)), [shops, coordinates, radius]);
+    .sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity)), [shops, coordinates, radius]);
+  const visibleShops = selectedShopId ? shops.filter(s => s.id === selectedShopId).map(s => ({
+    ...s, distance: coordinates && s.latitude !== undefined && s.longitude !== undefined
+      ? distanceKm(coordinates.latitude, coordinates.longitude, s.latitude, s.longitude) : undefined,
+  })) : nearby;
   const nav: Tab[] = profile?.role === 'shopkeeper'
     ? ['My products', 'Orders', 'My shop', 'Nearby']
     : ['Explore', 'Nearby', 'Reservations', 'Account'];
@@ -360,6 +417,10 @@ export default function Home() {
             <Text style={styles.title}>{p.name}</Text>
             <Text style={styles.price}>Nu. {p.price.toFixed(2)}</Text>
             <Text style={styles.muted}>{p.category} · {p.dzongkhag || 'Bhutan'} · {p.seller}</Text>
+            <Text style={styles.price}>{ratingSummary(reviews, p.sellerId).count
+              ? '★ ' + ratingSummary(reviews, p.sellerId).average.toFixed(1) + '/5 (' + ratingSummary(reviews, p.sellerId).count + ' shop reviews)'
+              : 'Shop not rated yet'}</Text>
+            {shops.some(s => s.id === p.sellerId) && <Button secondary title="View shop ratings and reviews" onPress={() => showShopReviews(p.sellerId)} />}
             <Text style={styles.body}>{p.description || 'Handcrafted locally.'}</Text>
             <Info title="Materials / ingredients" detail={p.materials || 'Not listed yet'} />
             <Text style={styles.muted}>Available stock: {p.stock}</Text>
@@ -402,8 +463,9 @@ export default function Home() {
         </>}
 
         {tab === 'Nearby' && <>
-          <Text style={styles.title}>Find local shops</Text>
-          <Text style={styles.muted}>Location is used only while the app is open. Shops must save their location to appear on this map.</Text>
+          <Text style={styles.title}>Local shops and public reviews</Text>
+          <Text style={styles.muted}>Everyone using TshongLa can read shop ratings and customer reviews. Location is optional; shops without a saved map pin still appear below.</Text>
+          {!!selectedShopId && <Button secondary title="Show all shops" onPress={() => setSelectedShopId(null)} />}
           <Button title="Use my current location" onPress={locate} />
           <View style={styles.row}>{[5, 20, 100, 0].map(km => <Button key={km}
             title={km === 0 ? 'All' : km + ' km'} secondary={radius !== km} onPress={() => setRadius(km)} />)}</View>
@@ -411,22 +473,26 @@ export default function Home() {
             initialRegion={{ latitude: coordinates?.latitude ?? 27.4728,
               longitude: coordinates?.longitude ?? 89.6390, latitudeDelta: coordinates ? 0.3 : 2.0,
               longitudeDelta: coordinates ? 0.3 : 2.0 }} showsUserLocation={!!coordinates}>
-            {nearby.map(s => <Marker key={s.id}
+            {visibleShops.filter(s => s.latitude !== undefined && s.longitude !== undefined).map(s => <Marker key={s.id}
               coordinate={{ latitude: s.latitude!, longitude: s.longitude! }}
               title={s.name} description={s.address} />)}
           </MapView>
           {!coordinates && <Text style={styles.muted}>Enable location for nearby distance filtering.</Text>}
-          {nearby.length === 0 && <Text style={styles.muted}>No shops with saved coordinates found in this area.</Text>}
-          {nearby.map(s => <View style={styles.card} key={s.id}>
+          {visibleShops.length === 0 && <Text style={styles.muted}>No shops found for this selection.</Text>}
+          {visibleShops.map(s => <View style={styles.card} key={s.id}>
             <Text style={styles.title}>{s.name}</Text>
             <Text style={styles.muted}>{s.address || s.dzongkhag || 'Address not provided'}</Text>
             {s.distance !== undefined && <Text style={styles.price}>{s.distance.toFixed(1)} km away (straight-line)</Text>}
             <Text style={styles.body}>Hours: {s.openTime}–{s.closeTime} · {isShopOpen(s) ? 'Open by schedule' : 'Closed by schedule'}</Text>
             {!!s.closedDays && <Text style={styles.muted}>Closed: {s.closedDays}</Text>}
             {!!s.phone && <Text style={styles.muted}>Phone: {s.phone}</Text>}
-            <Button secondary title="Open in Maps" onPress={() => Linking.openURL(
-              'https://www.google.com/maps/search/?api=1&query=' +
-              encodeURIComponent(String(s.latitude) + ',' + String(s.longitude)))} />
+            <ShopReviews shopId={s.id} reviews={reviews} />
+            {s.latitude !== undefined && s.longitude !== undefined &&
+              <Button secondary title="Open in Maps" onPress={() => Linking.openURL(
+                'https://www.google.com/maps/search/?api=1&query=' +
+                encodeURIComponent(String(s.latitude) + ',' + String(s.longitude)))} />}
+            {(s.latitude === undefined || s.longitude === undefined) &&
+              <Text style={styles.muted}>This shop has not provided map coordinates yet.</Text>}
           </View>)}
         </>}
 
@@ -445,11 +511,32 @@ export default function Home() {
                 <Button danger title="Reject" onPress={() => changeStatus(b, 'rejected')} /></View>}
             {profile.role === 'shopkeeper' && b.status === 'confirmed' &&
               <Button title="Mark collected" onPress={() => changeStatus(b, 'collected')} />}
+            {profile.role === 'customer' && b.status === 'collected' && !!b.sellerId &&
+              <Button secondary title={reviews.some(r => r.shopId === b.sellerId && r.customerId === user.uid)
+                ? 'Edit my shop review' : 'Rate and review this shop'} onPress={() => beginReview(b)} />}
+            {profile.role === 'customer' && reviewing?.id === b.id && <View style={styles.reviewSection}>
+              <Text style={styles.title}>Your review of {b.sellerName || 'this shop'}</Text>
+              <Text style={styles.muted}>Only customers with collected reservations can leave reviews. Your name and review will be public.</Text>
+              <Text style={styles.fieldLabel}>Choose 1–5 stars</Text>
+              <View style={styles.row}>{[1, 2, 3, 4, 5].map(n => <Pressable
+                key={n} accessibilityRole="button" accessibilityLabel={n + ' stars'}
+                onPress={() => setReviewStars(n)} style={styles.starButton}>
+                <Text style={{ fontSize: 28, color: n <= reviewStars ? '#B78325' : '#AAA09A' }}>
+                  {n <= reviewStars ? '★' : '☆'}
+                </Text>
+              </Pressable>)}</View>
+              <Field label="Write your experience (10–500 characters)" value={reviewComment}
+                multiline onChange={v => setReviewComment(v.slice(0, 500))} />
+              <Text style={styles.muted}>{reviewComment.length}/500 characters</Text>
+              <Button disabled={busy} title={busy ? 'Saving review…' : 'Publish my review'} onPress={submitReview} />
+              <Button secondary title="Cancel" onPress={() => setReviewing(null)} />
+            </View>}
           </View>)}
         </>}
 
         {tab === 'My shop' && profile.role === 'shopkeeper' && <>
           <Text style={styles.title}>Shop profile and hours</Text>
+          {user && <View style={styles.card}><ShopReviews shopId={user.uid} reviews={reviews} /></View>
           <Text style={styles.muted}>Customers see your shop's public details, opening hours and saved map position.</Text>
           <View style={styles.card}>
             <Field label="Shop name" value={shopForm.name} onChange={v => setShopForm(s => ({ ...s, name: v }))} />
@@ -523,4 +610,7 @@ const styles = StyleSheet.create({
   notice: { padding: 12, backgroundColor: '#FFF1CF', borderRadius: 10 },
   logout: { padding: 10 },
   map: { width: '100%', height: 300, borderRadius: 15, marginTop: 5 },
+  reviewSection: { marginTop: 10, paddingTop: 12, borderTopWidth: 1, borderTopColor: line, gap: 8 },
+  reviewItem: { paddingVertical: 10, borderTopWidth: 1, borderTopColor: line, gap: 4 },
+  starButton: { paddingHorizontal: 3, paddingVertical: 4 },
 });
