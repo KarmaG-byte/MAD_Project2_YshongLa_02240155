@@ -41,6 +41,8 @@ service cloud.firestore {
       let bid = request.resource.data.lastBookingId;
       let bp = bookingPath(bid);
       return signedIn()
+        && v2Product(resource.data)
+        && v2Product(request.resource.data)
         && bid is string
         && request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['stock', 'lastBookingId', 'updatedAt'])
