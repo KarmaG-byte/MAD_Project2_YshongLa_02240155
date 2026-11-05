@@ -152,7 +152,7 @@ service cloud.firestore {
         && reviewId == data.shopId + '_' + request.auth.uid
         && data.shopId != request.auth.uid
         && exists(/databases/$(database)/documents/shops/$(data.shopId))
-        && data.customerName == get(userPath(request.auth.uid)).data.name
+        && data.customerName is string && data.customerName.size() <= 100
         && data.bookingId is string
         && exists(booking)
         && get(booking).data.customerId == request.auth.uid
