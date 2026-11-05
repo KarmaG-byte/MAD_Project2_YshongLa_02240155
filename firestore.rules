@@ -1,0 +1,147 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
+    function userPath(uid) { return /databases/$(database)/documents/users/$(uid); }
+    function productPath(pid) { return /databases/$(database)/documents/products/$(pid); }
+    function bookingPath(bid) { return /databases/$(database)/documents/bookings/$(bid); }
+    function seller(uid) {
+      return isSelf(uid) && exists(userPath(uid))
+        && get(userPath(uid)).data.role in ['shopkeeper', 'seller'];
+    }
+    function validProduct(data) {
+      return data.sellerId is string && data.name is string
+        && data.price is number && data.price > 0
+        && data.stock is int && data.stock >= 0
+        && data.active is bool;
+    }
+    function validShop(data) {
+      return data.name is string && data.openTime is string
+        && data.closeTime is string && data.closedDays is string;
+    }
+    function productReservation(pid) {
+      let bid = request.resource.data.lastBookingId;
+      let bp = bookingPath(bid);
+      return signedIn()
+        && bid is string
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['stock', 'lastBookingId', 'updatedAt'])
+        && resource.data.stock is int && resource.data.stock > 0
+        && request.resource.data.stock == resource.data.stock - 1
+        && !exists(bp)
+        && getAfter(bp).data.productId == pid
+        && getAfter(bp).data.customerId == request.auth.uid
+        && getAfter(bp).data.sellerId == resource.data.sellerId
+        && getAfter(bp).data.status == 'pending'
+        && getAfter(bp).data.quantity == 1;
+    }
+    function productRestock(pid) {
+      let bid = request.resource.data.lastBookingId;
+      let bp = bookingPath(bid);
+      return signedIn()
+        && bid is string && exists(bp)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['stock', 'lastBookingId', 'updatedAt'])
+        && resource.data.stock is int
+        && request.resource.data.stock == resource.data.stock + 1
+        && get(bp).data.productId == pid
+        && get(bp).data.status == 'pending'
+        && ((request.auth.uid == get(bp).data.customerId
+             && getAfter(bp).data.status == 'cancelled')
+          || (request.auth.uid == get(bp).data.sellerId
+             && getAfter(bp).data.status == 'rejected'));
+    }
+    function bookingCreatedCorrectly(bid) {
+      let data = request.resource.data;
+      let pp = productPath(data.productId);
+      return signedIn()
+        && data.keys().hasOnly([
+          'productId', 'productName', 'customerId', 'customerName',
+          'sellerId', 'sellerName', 'quantity', 'unitPrice',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && data.customerId == request.auth.uid
+        && data.quantity == 1 && data.status == 'pending'
+        && data.createdAt == request.time
+        && data.updatedAt == request.time
+        && exists(pp)
+        && get(pp).data.active == true
+        && get(pp).data.stock is int && get(pp).data.stock >= 1
+        && data.sellerId == get(pp).data.sellerId
+        && data.unitPrice == get(pp).data.price
+        && getAfter(pp).data.stock == get(pp).data.stock - 1
+        && getAfter(pp).data.lastBookingId == bid;
+    }
+    function bookingRestocked(bid) {
+      let pp = productPath(resource.data.productId);
+      return exists(pp)
+        && getAfter(pp).data.stock == get(pp).data.stock + 1
+        && getAfter(pp).data.lastBookingId == bid;
+    }
+    function validBookingTransition(bid) {
+      return signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['status', 'updatedAt'])
+        && request.resource.data.updatedAt == request.time
+        && (
+          (request.auth.uid == resource.data.customerId
+            && resource.data.status == 'pending'
+            && request.resource.data.status == 'cancelled'
+            && bookingRestocked(bid))
+          || (request.auth.uid == resource.data.sellerId
+            && ((resource.data.status == 'pending'
+                   && request.resource.data.status == 'confirmed')
+                || (resource.data.status == 'confirmed'
+                   && request.resource.data.status == 'collected')
+                || (resource.data.status == 'pending'
+                   && request.resource.data.status == 'rejected'
+                   && bookingRestocked(bid))))
+        );
+    }
+
+    match /users/{uid} {
+      allow get: if isSelf(uid);
+      allow list: if false;
+      allow create: if isSelf(uid)
+        && request.resource.data.role in ['customer', 'shopkeeper']
+        && request.resource.data.uid == uid;
+      allow update: if isSelf(uid)
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.uid == resource.data.uid;
+      allow delete: if false;
+    }
+    match /shops/{uid} {
+      allow read: if true; // This collection contains only public business details.
+      allow create, update: if seller(uid) && validShop(request.resource.data);
+      allow delete: if false;
+    }
+    match /products/{pid} {
+      allow read: if true;
+      allow create: if signedIn()
+        && seller(request.auth.uid)
+        && request.resource.data.sellerId == request.auth.uid
+        && validProduct(request.resource.data);
+      allow update: if
+        (signedIn() && seller(request.auth.uid)
+         && resource.data.sellerId == request.auth.uid
+         && request.resource.data.sellerId == resource.data.sellerId
+         && validProduct(request.resource.data))
+        || productReservation(pid)
+        || productRestock(pid);
+      // "Remove" in the app archives rather than hard-deleting, retaining booking history.
+      allow delete: if false;
+    }
+    match /bookings/{bid} {
+      allow get, list: if signedIn()
+        && (resource.data.customerId == request.auth.uid
+          || resource.data.sellerId == request.auth.uid);
+      allow create: if bookingCreatedCorrectly(bid);
+      allow update: if validBookingTransition(bid);
+      allow delete: if false;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
