@@ -2,6 +2,23 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
+    function currentUser() { return get(userPath(request.auth.uid)); }
+    function isVerifiedCustomer() {
+      return signedIn()
+        && currentUser().data.role == 'customer'
+        && currentUser().data.phoneVerified == true;
+    }
+    function isVerifiedShopkeeper() {
+      return signedIn()
+        && currentUser().data.role == 'shopkeeper'
+        && currentUser().data.phoneVerified == true
+        && currentUser().data.cidNumber is string
+        && currentUser().data.cidNumber.size() > 0
+        && currentUser().data.cidImageUri is string
+        && currentUser().data.cidImageUri.size() > 0;
+    }
+    function v2Product(data) { return data.get('schemaVersion', 1) == 2; }
+    function v2Booking(data) { return data.get('schemaVersion', 1) == 2; }
     function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
     function userPath(uid) { return /databases/$(database)/documents/users/$(uid); }
     function productPath(pid) { return /databases/$(database)/documents/products/$(pid); }
