@@ -223,9 +223,40 @@ service cloud.firestore {
       allow get, list: if signedIn()
         && (resource.data.customerId == request.auth.uid
           || resource.data.sellerId == request.auth.uid);
-      allow create: if bookingCreatedCorrectly(bid);
-      allow update: if validBookingTransition(bid);
+      allow create: if (
+        // Project I verified customers and legacy capitalized booking status.
+        !v2Booking(request.resource.data)
+        && isVerifiedCustomer()
+        && request.resource.data.customerId == request.auth.uid
+        && request.resource.data.status == 'Reserved'
+        && request.resource.data.quantity > 0
+      ) || bookingCreatedCorrectly(bid);
+      allow update: if (
+        !v2Booking(resource.data) && !v2Booking(request.resource.data)
+        && signedIn()
+        && resource.data.sellerId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['status', 'updatedAt'])
+        && request.resource.data.status in [
+          'Reserved', 'Ready for pickup', 'Collected', 'Cancelled'
+        ]
+      ) || validBookingTransition(bid);
       allow delete: if false;
+    }
+    match /reviews/{rid} {
+      allow read: if signedIn();
+      allow create: if isVerifiedCustomer()
+        && request.resource.data.customerId == request.auth.uid
+        && request.resource.data.verifiedPurchase == true
+        && request.resource.data.productRating >= 1
+        && request.resource.data.productRating <= 5
+        && request.resource.data.businessRating >= 1
+        && request.resource.data.businessRating <= 5
+        && exists(bookingPath(request.resource.data.bookingId))
+        && get(bookingPath(request.resource.data.bookingId)).data.customerId == request.auth.uid
+        && get(bookingPath(request.resource.data.bookingId)).data.productId == request.resource.data.productId
+        && get(bookingPath(request.resource.data.bookingId)).data.status == 'Collected';
+      allow update, delete: if false;
     }
     match /{document=**} {
       allow read, write: if false;
