@@ -12,7 +12,7 @@ export type Profile = {
 export type Product = {
   id: string; name: string; description: string; materials: string; category: string;
   price: number; stock: number; sellerId: string; seller: string;
-  dzongkhag: string; imageUrl: string; active: boolean;
+  dzongkhag: string; imageUrl: string; active: boolean; schemaVersion?: number;
 };
 export type Shop = {
   id: string; name: string; address: string; dzongkhag: string;
@@ -47,7 +47,7 @@ export function normalizeProduct(id: string, raw: DocumentData): Product {
     seller: asString(raw.seller || raw.sellerName || raw.shopName) || 'Local artisan',
     dzongkhag: asString(raw.dzongkhag || raw.location),
     imageUrl: asString(raw.imageUrl || raw.imageURL || raw.photoUrl),
-    active: raw.active !== false,
+    active: raw.active !== false, schemaVersion: numeric(raw.schemaVersion, 1),
   };
 }
 export function normalizeShop(id: string, raw: DocumentData): Shop {
@@ -83,11 +83,12 @@ export async function saveProduct(input: Omit<Product, 'id'>, currentId?: string
     || !Number.isInteger(input.stock) || input.stock < 0 || !input.materials.trim()) {
     throw new Error('Provide a product name, raw materials, positive price and valid stock.');
   }
-  const data = { ...input, name: input.name.trim(), updatedAt: serverTimestamp() };
+  const data = { ...input, schemaVersion: 2, name: input.name.trim(), updatedAt: serverTimestamp() };
   if (currentId) {
     const target = doc(db, 'products', currentId);
     const snap = await getDoc(target);
     if (!snap.exists() || snap.data().sellerId !== input.sellerId) throw new Error('Only the original seller can edit this product.');
+    if (snap.data().schemaVersion !== 2) throw new Error('This older TshongLa 1 listing is read-only in TshongLa 2.');
     await updateDoc(target, data);
     return currentId;
   }
@@ -96,10 +97,12 @@ export async function saveProduct(input: Omit<Product, 'id'>, currentId?: string
 }
 export async function setProductActive(product: Product, sellerId: string, active: boolean) {
   if (product.sellerId !== sellerId) throw new Error('Only the owner can change this listing.');
+  if (product.schemaVersion !== 2) throw new Error('Legacy TshongLa 1 listings must be managed in TshongLa 1.');
   // Soft delete protects existing reservations and enables the seller to restore a listing.
   await updateDoc(doc(db, 'products', product.id), { active, updatedAt: serverTimestamp() });
 }
 export async function reserveProduct(product: Product, customerId: string, customerName: string) {
+  if (product.schemaVersion !== 2) throw new Error('Legacy TshongLa 1 listings cannot use TshongLa 2 reservations.');
   if (!product.sellerId) throw new Error('This older listing needs a seller ID before reservations can be enabled.');
   if (product.sellerId === customerId) throw new Error('You cannot reserve your own product.');
   const bookingRef = doc(collection(db, 'bookings'));
@@ -108,6 +111,7 @@ export async function reserveProduct(product: Product, customerId: string, custo
     const snap = await transaction.get(productRef);
     if (!snap.exists()) throw new Error('This listing is no longer available.');
     const data = snap.data();
+    if (data.schemaVersion !== 2) throw new Error('This product uses TshongLa 1 reservations.');
     if (data.active === false || !Number.isInteger(data.stock) || data.stock < 1) {
       throw new Error('This product is unavailable or out of stock.');
     }
@@ -116,7 +120,7 @@ export async function reserveProduct(product: Product, customerId: string, custo
     transaction.set(bookingRef, {
       productId: product.id, productName: asString(data.name) || product.name,
       customerId, customerName, sellerId: data.sellerId, sellerName: product.seller,
-      quantity: 1, unitPrice: numeric(data.price), status: 'pending',
+      schemaVersion: 2, quantity: 1, unitPrice: numeric(data.price), status: 'pending',
       createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
     });
   });
@@ -129,6 +133,7 @@ export async function transitionBooking(booking: Booking, actorUid: string,
     const snap = await transaction.get(bookingRef);
     if (!snap.exists()) throw new Error('Reservation was not found.');
     const current = snap.data();
+    if (current.schemaVersion !== 2) throw new Error('Manage older TshongLa 1 bookings in the original app.');
     const isCustomer = current.customerId === actorUid;
     const isSeller = current.sellerId === actorUid;
     const valid = (isCustomer && current.status === 'pending' && next === 'cancelled')
