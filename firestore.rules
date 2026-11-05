@@ -67,6 +67,7 @@ service cloud.firestore {
           .hasOnly(['stock', 'lastBookingId', 'updatedAt'])
         && resource.data.stock is int
         && request.resource.data.stock == resource.data.stock + 1
+        && get(bp).data.schemaVersion == 2
         && get(bp).data.productId == pid
         && get(bp).data.status == 'pending'
         && ((request.auth.uid == get(bp).data.customerId
@@ -79,10 +80,11 @@ service cloud.firestore {
       let pp = productPath(data.productId);
       return signedIn()
         && data.keys().hasOnly([
-          'productId', 'productName', 'customerId', 'customerName',
+          'schemaVersion', 'productId', 'productName', 'customerId', 'customerName',
           'sellerId', 'sellerName', 'quantity', 'unitPrice',
           'status', 'createdAt', 'updatedAt'
         ])
+        && data.schemaVersion == 2
         && data.customerId == request.auth.uid
         && data.quantity == 1 && data.status == 'pending'
         && data.createdAt == request.time
