@@ -118,6 +118,13 @@ export default function Home() {
       snap => setBookings(snap.docs.map(d => normalizeBooking(d.id, d.data()))),
       e => setMessage('Reservations: ' + e.message));
   }, [user?.uid, profile?.role]);
+  useEffect(() => {
+    if (profile?.role === 'shopkeeper') {
+      setTab(previous => ['My products', 'Orders', 'My shop', 'Nearby'].includes(previous) ? previous : 'My products');
+    } else if (profile?.role === 'customer') {
+      setTab(previous => ['Explore', 'Nearby', 'Reservations', 'Account'].includes(previous) ? previous : 'Explore');
+    }
+  }, [profile?.role]);
   const ownShop = shops.find(s => s.id === user?.uid);
   useEffect(() => {
     if (!ownShop) return;
