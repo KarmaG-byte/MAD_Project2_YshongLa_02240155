@@ -11,6 +11,7 @@ TshongLa 2 is the cross-platform continuation of the Bhutanese handmade marketpl
 - See reservation status; cancel a **pending** reservation and return stock.
 - View shop pins and opening schedules; filter nearby shops by 5, 20 or 100 km (straight-line distance), or view all.
 - Open shop coordinates in an external maps app.
+- **Public shopkeeper ratings and reviews:** after a reservation is marked collected, customers can submit 1–5 stars and a written comment (10–500 characters), then edit their review later. One review per customer per shop; reviews appear in shop listings, shopkeeper profiles and as average ratings beside products.
 
 ### Shopkeeper
 - Register/sign in and manage a public shop profile.
@@ -24,6 +25,7 @@ TshongLa 2 is the cross-platform continuation of the Bhutanese handmade marketpl
 ### Data and security
 - Transaction routines in src/marketplace.ts handle coordinated stock changes.
 - Role-sensitive Firestore rules in firestore.rules; upload rules in storage.rules.
+- Rules in firestore.rules verify that every shop review comes from a customer whose reservation was marked collected, and prevent sellers from reviewing their own shops.
 - Compatibility adapter reads common field variations from Project I; records lacking sellerId cannot be reserved until migrated.
 - Burgundy-and-cream interface in app/index.tsx.
 
@@ -45,8 +47,9 @@ TshongLa 2 is the cross-platform continuation of the Bhutanese handmade marketpl
 - shops/{uid}: **public** business profile (name, address, dzongkhag, phone, hours, closedDays, latitude, longitude).
 - products/{autoId}: name, description, materials, category, price, stock, sellerId, seller, dzongkhag, imageUrl, active, lastBookingId.
 - bookings/{autoId}: productId, productName, customerId, sellerId, names, unitPrice, quantity=1, status, createdAt, updatedAt.
+- shopReviews/{shopId}_{customerUid}: shopId, customerId, customerName, bookingId, rating (1–5), comment, createdAt, updatedAt. All reviews are publicly readable. Writes require a collected reservation and the corresponding customer account.
 
-Reservation flow: pending → confirmed → collected, or pending → rejected/cancelled. Stock is decremented on reservation, and restored on rejection or cancellation in the **same Firestore transaction**. Only pending reservations can be cancelled by customers.
+Reservation flow: pending → confirmed → collected, or pending → rejected/cancelled. Stock is decremented on reservation, and restored on rejection or cancellation in the **same Firestore transaction**. Only pending reservations can be cancelled by customers. Once an order is marked collected, the customer can review that shop.
 
 **Important:** Committing firestore.rules to GitHub does **not** deploy these rules to Firebase. If outdated rules remain active, writes can fail with permission-denied. Never set unrestricted security rules to work around this.
 
@@ -56,13 +59,13 @@ The Project I GitHub main README describes demo products, and its data model dif
 
 ## Testing before submission
 
-After npm install, run **npm run typecheck** and **npx expo install --check**. Test with two separate accounts: register and sign in, save shop/hours/GPS, publish and edit product, archive and restore, reserve 1 unit, confirm, mark collected, cancel/reject another pending reservation, verify stock restoration, use maps and distance, test image URLs. Only test Storage uploads if Storage is enabled and rules deployed.
+After npm install, run **npm run typecheck** and **npx expo install --check**. Test with two separate accounts: register and sign in, save shop/hours/GPS, publish and edit product, archive and restore, reserve 1 unit, confirm, mark collected, cancel/reject another pending reservation, verify stock restoration, use maps and distance, test image URLs, submit a five-star review after collection, edit it, and confirm that both customer and shopkeeper accounts see the comment and correct average. Confirm an uncollected order cannot be reviewed and a second review for the same shop does not create a duplicate. Only test Storage uploads if Storage is enabled and rules deployed.
 
 Inspect Firestore documents after each reservation action. Confirm rule permissions and actual device behavior before demonstrating.
 
 ## Current limitations
 
-- No payment processing, shopping cart checkout, chat, ratings, identity verification, push notifications, shop moderation, or admin console.
+- No payment processing, shopping cart checkout, chat, product-specific ratings, identity verification, push notifications, review moderation, or admin console. Shopkeeper reviews ARE implemented.
 - Google Maps may require platform-specific configuration in production builds; Expo Go behavior can differ across devices.
 - Shop pins are fixed coordinates entered by the seller, not continuous location tracking.
 - Open/closed indication uses **device-local time**, not a live business status service.
