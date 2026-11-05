@@ -9,7 +9,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // Protect user data with Firebase Authentication and Firestore Security Rules.
 // Optional EXPO_PUBLIC_* environment variables can override these values.
 const firebaseConfig = {
-  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || 'AIzaSyDASCctAxaIIMtZnhGiLpYunFNEseKahbg',
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || 'AIzaSyDASCctAxaIIMt7nhGilpYunFNEseKahbg',
   authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || 'tshongla-77361.firebaseapp.com',
   projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || 'tshongla-77361',
   storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || 'tshongla-77361.firebasestorage.app',
