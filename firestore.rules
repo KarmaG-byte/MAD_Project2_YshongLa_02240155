@@ -100,6 +100,50 @@ service cloud.firestore {
         );
     }
 
+    function validShopReview(reviewId) {
+      let data = request.resource.data;
+      let booking = bookingPath(data.bookingId);
+      return signedIn()
+        && exists(userPath(request.auth.uid))
+        && get(userPath(request.auth.uid)).data.role == 'customer'
+        && data.keys().hasAll([
+          'shopId', 'customerId', 'customerName', 'bookingId',
+          'rating', 'comment', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'shopId', 'customerId', 'customerName', 'bookingId',
+          'rating', 'comment', 'createdAt', 'updatedAt'
+        ])
+        && data.shopId is string
+        && data.customerId == request.auth.uid
+        && reviewId == data.shopId + '_' + request.auth.uid
+        && data.shopId != request.auth.uid
+        && exists(/databases/$(database)/documents/shops/$(data.shopId))
+        && data.customerName == get(userPath(request.auth.uid)).data.name
+        && data.bookingId is string
+        && exists(booking)
+        && get(booking).data.customerId == request.auth.uid
+        && get(booking).data.sellerId == data.shopId
+        && get(booking).data.status == 'collected'
+        && data.rating is int && data.rating >= 1 && data.rating <= 5
+        && data.comment is string
+        && data.comment.size() >= 10 && data.comment.size() <= 500;
+    }
+    match /shopReviews/{reviewId} {
+      // Public shop feedback; customers need not be signed in to read it.
+      allow get, list: if true;
+      // Only verified customers with a collected reservation may review.
+      // Document ID = shopId + '_' + customerUid, so one review per shop/customer.
+      allow create: if validShopReview(reviewId)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if validShopReview(reviewId)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['rating', 'comment', 'updatedAt'])
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+
     match /users/{uid} {
       allow get: if isSelf(uid);
       allow list: if false;
