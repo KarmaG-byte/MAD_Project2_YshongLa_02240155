@@ -64,7 +64,7 @@ export function normalizeBooking(id: string, raw: DocumentData): Booking {
     productId: asString(raw.productId), productName: asString(raw.productName) || asString(raw.product?.name),
     customerName: asString(raw.customerName), sellerName: asString(raw.sellerName),
     quantity: numeric(raw.quantity, 1), unitPrice: numeric(raw.unitPrice ?? raw.price),
-    status: (raw.status || 'pending') as Booking['status'] };
+    status: (raw.status === 'Collected' ? 'collected' : raw.status || 'pending') as Booking['status'] };
 }
 export function distanceKm(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const rad = Math.PI / 180;
