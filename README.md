@@ -18,9 +18,17 @@ TshongLa 2 is the cross-platform continuation of the Bhutanese handmade marketpl
 - Set shop name, address, Dzongkhag, phone, opening time, closing time and closed days.
 - Save the device's current GPS position as the **fixed shop location**.
 - Create and edit products, including materials, prices and stock.
-- Add a **public HTTPS image URL**, or select a phone photo for optional Firebase Storage upload.
+- Add a product photo by **taking a picture with the camera**, **choosing one from the gallery**, or pasting a public HTTPS image URL. Photos are resized automatically (800 px wide) and uploaded to Firebase Storage when it is available; otherwise the resized photo is saved inside the product document, so photos work on the free Spark plan too.
 - **Remove** products by archiving them (active=false) and restore them later. Existing reservations remain intact.
 - View orders, **confirm/reject pending reservations** and mark confirmed orders as **collected**. Rejection returns stock.
+
+### Shopkeeper verification
+- When registering as a shopkeeper, the person enters an **11-digit CID number** and takes or chooses a **photo of their CID card**. Existing shopkeeper accounts can submit the same details from the **My shop** tab.
+- Until the administrator approves them, a shopkeeper can set up the shop profile but **cannot publish, edit or remove products**. The app and firestore.rules both enforce this.
+- **Approving a shopkeeper (administrator, in the Firebase Console):** open Firestore Database → `users`, find the shopkeeper, check `cidNumber` and view the photo (copy the `cidImageUri` value into a browser address bar). Then create the collection `verifiedShopkeepers` (first time only) and add a document whose **Document ID is the shopkeeper's UID** with the field `approved` = `true` (boolean). The shop then shows a **Verified shop** badge to customers.
+- To reject a submission, delete the `cidNumber` and `cidImageUri` fields from that user's document; the shopkeeper can then submit again.
+- The ID photo is stored in the shopkeeper's own `users/{uid}` document, which only that user can read. Nobody can write `verifiedShopkeepers` from the app.
+- You must **publish the updated firestore.rules** in Firebase Console → Firestore Database → Rules for this to take effect.
 
 ### Data and security
 - Transaction routines in src/marketplace.ts handle coordinated stock changes.
@@ -41,7 +49,7 @@ The merged firestore.rules retains Project I verification and capitalized bookin
 4. Firebase Console → Authentication → Sign-in method → enable **Email/Password**.
 5. Ensure Cloud Firestore exists.
 6. **Back up and review your existing rules before deploying.** Firebase Console → Firestore Database → Rules → review and paste contents of firestore.rules → Publish. These rules target Project II and **may break older Project I access patterns**; reconcile them if Project I must keep working.
-7. For selecting/uploading **phone photos**, Firebase Storage must be available. Review and deploy storage.rules in Firebase Console → Storage → Rules. Storage provisioning may require enabling the **Blaze billing plan**; do not enable billing without checking costs. Public **HTTPS image URLs** work without Storage.
+7. **Firebase Storage is optional.** If Storage is enabled, deploy storage.rules (Firebase Console → Storage → Rules) and photos are uploaded there. If it is not available, the app stores the resized photo with the product automatically. Storage provisioning may require the **Blaze billing plan**; do not enable billing unless you understand the costs.
 8. Run **npx expo install --check**, then **npx expo start --clear**.
 9. Open Expo Go and test separate customer/shopkeeper accounts.
 
@@ -69,10 +77,10 @@ Inspect Firestore documents after each reservation action. Confirm rule permissi
 
 ## Current limitations
 
-- No payment processing, shopping cart checkout, chat, product-specific ratings, identity verification, push notifications, review moderation, or admin console. Shopkeeper reviews ARE implemented.
+- No payment processing, shopping cart checkout, chat, product-specific ratings, automated identity checks (shopkeepers are approved manually by the administrator), push notifications, review moderation, or admin console. Shopkeeper reviews ARE implemented.
 - Google Maps may require platform-specific configuration in production builds; Expo Go behavior can differ across devices.
 - Shop pins are fixed coordinates entered by the seller, not continuous location tracking.
-- Open/closed indication uses **device-local time**, not a live business status service.
+- Open/closed indication uses **Bhutan time (UTC+6)**, not the phone's time zone, and is computed from the saved schedule rather than a live business status service.
 - Public product photos must be appropriate for public viewing.
 - Firebase Security Rules must be reviewed against Project I before deployment.
 - **Source implementation is committed, but real Firebase end-to-end and device testing are still required.**

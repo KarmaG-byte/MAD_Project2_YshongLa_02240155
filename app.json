@@ -20,7 +20,8 @@
           "photosPermission": "Allow TshongLa to select photos for your product listings.",
           "cameraPermission": "Allow TshongLa to photograph products."
         }
-      ]
+      ],
+      "expo-status-bar"
     ],
     "android": {
       "package": "com.karmagbyte.tshongla2",

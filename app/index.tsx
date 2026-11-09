@@ -7,7 +7,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import MapView, { Marker } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
-import { getDownloadURL, getStorage, ref as storageRef, uploadString } from 'firebase/storage';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { getDownloadURL, ref as storageRef, uploadString } from 'firebase/storage';
 import {
   createUserWithEmailAndPassword, onAuthStateChanged, sendPasswordResetEmail,
   signInWithEmailAndPassword, signOut, type User,
@@ -15,7 +16,8 @@ import {
 import {
   collection, doc, getDoc, onSnapshot, query, serverTimestamp, setDoc, where,
 } from 'firebase/firestore';
-import { auth, db } from '../firebase';
+import { auth, db, storage } from '../firebase';
+import { friendlyError } from '../src/errors';
 import { normalizeShopReview, ratingSummary, saveShopReview, starText, type ShopReview } from '../src/shopReviews';
 import {
   distanceKm, isShopOpen, normalizeBooking, normalizeProduct, normalizeProfile,
@@ -62,7 +64,21 @@ function ProductPicture({ url, height = 132 }: { url: string; height?: number })
 function Info({ title, detail }: { title: string; detail: string }) {
   return <View style={{ marginBottom: 7 }}><Text style={styles.muted}>{title}</Text><Text style={styles.body}>{detail}</Text></View>;
 }
-function errorText(e: unknown) { return e instanceof Error ? e.message : String(e); }
+const errorText = friendlyError;
+
+// Upload to Firebase Storage when it is available. Spark-plan projects often have no
+// Storage bucket, so fall back to keeping the (already resized) photo inside the product
+// document. Photos are resized to 800px wide, so they stay far below Firestore's 1 MiB limit.
+async function uploadProductImage(uid: string, image: { base64: string }): Promise<string> {
+  try {
+    const fileRef = storageRef(storage, 'product-images/' + uid + '/' + Date.now() + '.jpg');
+    await uploadString(fileRef, image.base64, 'base64', { contentType: 'image/jpeg' });
+    return await getDownloadURL(fileRef);
+  } catch (e) {
+    console.warn('Storage upload failed; saving the photo with the product instead.', e);
+    return 'data:image/jpeg;base64,' + image.base64;
+  }
+}
 
 function ShopReviews({ shopId, reviews }: { shopId: string; reviews: ShopReview[] }) {
   const summary = ratingSummary(reviews, shopId);
@@ -110,6 +126,11 @@ export default function Home() {
   const [showProductForm, setShowProductForm] = useState(false);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [pickedImage, setPickedImage] = useState<ImageSelection>(null);
+  const [keptImage, setKeptImage] = useState('');
+  const [cidNumber, setCidNumber] = useState('');
+  const [idPhoto, setIdPhoto] = useState<ImageSelection>(null);
+  const [approvedIds, setApprovedIds] = useState<string[]>([]);
+  const [shopPin, setShopPin] = useState<{ latitude: number; longitude: number } | null>(null);
   const [shopForm, setShopForm] = useState({ name: '', address: '', dzongkhag: '', phone: '',
     openTime: '09:00', closeTime: '18:00', closedDays: 'Sunday' });
 
@@ -121,12 +142,15 @@ export default function Home() {
   useEffect(() => {
     if (!user) return;
     return onSnapshot(doc(db, 'users', user.uid), snap => {
-      if (snap.exists()) setProfile(normalizeProfile(snap.id, snap.data()));
+      if (snap.exists()) {
+        setProfile(normalizeProfile(snap.id, snap.data()));
+        setMessage(m => m.startsWith('Account exists but its profile') ? '' : m);
+      }
       else setMessage('Account exists but its profile is missing. Please contact the shop administrator or sign out.');
     }, e => setMessage('Profile: ' + e.message));
   }, [user?.uid]);
   useEffect(() => {
-    if (!user) { setProducts([]); setShops([]); return; }
+    if (!user) { setProducts([]); setShops([]); setApprovedIds([]); return; }
     const stopProducts = onSnapshot(collection(db, 'products'),
       snap => setProducts(snap.docs.map(d => normalizeProduct(d.id, d.data()))),
       e => setMessage('Products: ' + e.message));
@@ -136,7 +160,10 @@ export default function Home() {
     const stopReviews = onSnapshot(collection(db, 'shopReviews'),
       snap => setReviews(snap.docs.map(d => normalizeShopReview(d.id, d.data()))),
       e => setMessage('Shop reviews: ' + e.message));
-    return () => { stopProducts(); stopShops(); stopReviews(); };
+    const stopApproved = onSnapshot(collection(db, 'verifiedShopkeepers'),
+      snap => setApprovedIds(snap.docs.filter(d => d.data().approved === true).map(d => d.id)),
+      e => setMessage('Verification: ' + e.message));
+    return () => { stopProducts(); stopShops(); stopReviews(); stopApproved(); };
   }, [user?.uid]);
   useEffect(() => {
     if (!user || !profile) return;
@@ -153,6 +180,8 @@ export default function Home() {
     }
   }, [profile?.role]);
   const ownShop = shops.find(s => s.id === user?.uid);
+  const verified = !!user && approvedIds.includes(user.uid);
+  const idSubmitted = !!profile?.cidNumber && !!profile?.hasIdPhoto;
   useEffect(() => {
     if (!ownShop) return;
     setShopForm({
@@ -167,20 +196,36 @@ export default function Home() {
     if (!email.trim() || !password || (register && !fullName.trim())) {
       Alert.alert('Missing details', 'Enter your name (when registering), email and password.'); return;
     }
+    if (register && role === 'shopkeeper') {
+      const problem = idProblem();
+      if (problem) { Alert.alert('Shop verification', problem); return; }
+    }
     setBusy(true);
     setMessage('');
     try {
       if (register) {
         const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
         const uid = cred.user.uid;
-        await setDoc(doc(db, 'users', uid), {
-          uid, name: fullName.trim(), email: email.trim(), role, createdAt: serverTimestamp(),
-        });
-        if (role === 'shopkeeper') await setDoc(doc(db, 'shops', uid), {
-          name: initialShopName.trim() || fullName.trim() + "'s shop",
-          address: '', dzongkhag: '', phone: '', openTime: '09:00',
-          closeTime: '18:00', closedDays: 'Sunday', updatedAt: serverTimestamp(),
-        });
+        try {
+          await setDoc(doc(db, 'users', uid), {
+            uid, name: fullName.trim(), email: email.trim(), role, createdAt: serverTimestamp(),
+            ...(role === 'shopkeeper' && idPhoto ? {
+              cidNumber: cidNumber.trim(), cidImageUri: 'data:image/jpeg;base64,' + idPhoto.base64,
+              cidSubmittedAt: serverTimestamp(),
+            } : {}),
+          });
+          if (role === 'shopkeeper') await setDoc(doc(db, 'shops', uid), {
+            name: initialShopName.trim() || fullName.trim() + "'s shop",
+            address: '', dzongkhag: '', phone: '', openTime: '09:00',
+            closeTime: '18:00', closedDays: 'Sunday', updatedAt: serverTimestamp(),
+          });
+        } catch (profileError) {
+          // Do not leave a half-created account (login without a profile). Remove it so the
+          // person can fix the Firebase setup and register again with the same email.
+          await cred.user.delete().catch(() => signOut(auth));
+          throw profileError;
+        }
+        setCidNumber(''); setIdPhoto(null);
         setTab(role === 'shopkeeper' ? 'My shop' : 'Explore');
       } else {
         const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
@@ -206,14 +251,81 @@ export default function Home() {
       Alert.alert('Email sent', 'Check your inbox for the password reset link.');
     } catch (e) { Alert.alert('Reset password', errorText(e)); }
   }
-  async function locate() {
+  // ---- Shopkeeper verification (CID number + ID photo, approved by the administrator) ----
+  function idProblem(): string | null {
+    if (!/^\d{11}$/.test(cidNumber.trim())) return 'Enter your 11-digit Bhutanese CID number.';
+    if (!idPhoto) return 'Take or choose a clear photo of your CID card.';
+    if (idPhoto.base64.length > 800_000) return 'That photo is too large. Choose a smaller photo.';
+    return null;
+  }
+  async function pickIdPhoto(source: 'gallery' | 'camera') {
+    try {
+      if (source === 'camera') {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) return Alert.alert('Camera permission', 'Allow camera access to photograph your ID.');
+      }
+      const options: ImagePicker.ImagePickerOptions = { mediaTypes: ['images'], quality: 0.8 };
+      const result = source === 'camera'
+        ? await ImagePicker.launchCameraAsync(options)
+        : await ImagePicker.launchImageLibraryAsync(options);
+      if (result.canceled || !result.assets[0]) return;
+      const asset = result.assets[0];
+      const small = await ImageManipulator.manipulateAsync(
+        asset.uri, [{ resize: { width: Math.min(asset.width || 900, 900) } }],
+        { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG, base64: true });
+      if (!small.base64) return Alert.alert('ID photo', 'Could not read the selected image. Try another one.');
+      setIdPhoto({ uri: small.uri, base64: small.base64, mimeType: 'image/jpeg' });
+    } catch (e) { Alert.alert('ID photo', errorText(e)); }
+  }
+  async function submitVerification() {
+    if (!user || profile?.role !== 'shopkeeper') return;
+    const problem = idProblem();
+    if (problem) return Alert.alert('Shop verification', problem);
+    setBusy(true);
+    try {
+      await setDoc(doc(db, 'users', user.uid), {
+        cidNumber: cidNumber.trim(), cidImageUri: 'data:image/jpeg;base64,' + idPhoto!.base64,
+        cidSubmittedAt: serverTimestamp(),
+      }, { merge: true });
+      setCidNumber(''); setIdPhoto(null);
+      Alert.alert('Submitted', 'Your ID details were sent for approval. You can list products once the administrator verifies your shop.');
+    } catch (e) { Alert.alert('Shop verification', errorText(e)); }
+    finally { setBusy(false); }
+  }
+  function needsVerification(): boolean {
+    if (verified) return false;
+    Alert.alert('Verification needed', idSubmitted
+      ? 'Your ID is waiting for approval. You can manage products once the administrator verifies your shop.'
+      : 'Submit your CID number and ID photo in the My shop tab first.');
+    return true;
+  }
+  function renderIdForm() {
+    return <View style={{ gap: 10 }}>
+      <Field label="CID number (11 digits)" keyboardType="numeric" value={cidNumber}
+        onChange={v => setCidNumber(v.replace(/\D/g, '').slice(0, 11))} />
+      <View style={styles.row}>
+        <Button secondary title="📷 Photo of CID" onPress={() => pickIdPhoto('camera')} />
+        <Button secondary title="🖼 Choose from gallery" onPress={() => pickIdPhoto('gallery')} />
+      </View>
+      {!!idPhoto && <ProductPicture url={idPhoto.uri} height={130} />}
+      <Text style={styles.muted}>Only you and the TshongLa administrator can see your ID. It is used to approve your shop before you can list products.</Text>
+    </View>;
+  }
+  async function getPosition() {
     try {
       const permission = await Location.requestForegroundPermissionsAsync();
-      if (!permission.granted) return Alert.alert('Permission required', 'Allow location access to find nearby shops.');
-      const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      setCoordinates({ latitude: position.coords.latitude, longitude: position.coords.longitude });
-    } catch (e) { Alert.alert('Location', errorText(e)); }
+      if (!permission.granted) {
+        Alert.alert('Permission required', 'Allow location access to use GPS.');
+        return null;
+      }
+      const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      return { latitude: position.coords.latitude, longitude: position.coords.longitude };
+    } catch (e) { Alert.alert('Location', errorText(e)); return null; }
   }
+  async function locate() { const here = await getPosition(); if (here) setCoordinates(here); }
+  // The shop pin is separate from the browsing location, so looking at "Nearby" from home
+  // can never silently move a shop's saved position.
+  async function locateShop() { const here = await getPosition(); if (here) setShopPin(here); }
   async function updateShop() {
     if (!user || profile?.role !== 'shopkeeper') return;
     if (!shopForm.name.trim()) return Alert.alert('Shop name required', 'Enter the shop name.');
@@ -226,72 +338,79 @@ export default function Home() {
     try {
       await setDoc(doc(db, 'shops', user.uid), {
         ...shopForm, name: shopForm.name.trim(),
-        ...(coordinates ? { latitude: coordinates.latitude, longitude: coordinates.longitude } : {}),
+        ...(shopPin ? { latitude: shopPin.latitude, longitude: shopPin.longitude } : {}),
         updatedAt: serverTimestamp(),
       }, { merge: true });
+      setShopPin(null);
       Alert.alert('Shop saved', 'Shop details and opening hours updated.');
     } catch (e) { Alert.alert('Shop settings', errorText(e)); }
     finally { setBusy(false); }
   }
   function startCreate() {
-    setEditId(null); setDraft(emptyDraft); setPickedImage(null); setShowProductForm(true);
+    if (needsVerification()) return;
+    setEditId(null); setDraft(emptyDraft); setPickedImage(null); setKeptImage(''); setShowProductForm(true);
   }
   function startEdit(p: Product) {
-    setEditId(p.id); setPickedImage(null);
+    if (needsVerification()) return;
+    const embedded = p.imageUrl.startsWith('data:');
+    setEditId(p.id); setPickedImage(null); setKeptImage(embedded ? p.imageUrl : '');
     setDraft({ name: p.name, description: p.description, materials: p.materials, category: p.category,
-      price: String(p.price), stock: String(p.stock), dzongkhag: p.dzongkhag, imageUrl: p.imageUrl });
+      price: String(p.price), stock: String(p.stock), dzongkhag: p.dzongkhag, imageUrl: embedded ? '' : p.imageUrl });
     setShowProductForm(true);
   }
   function updateDraft(key: keyof Draft, value: string) { setDraft(prev => ({ ...prev, [key]: value })); }
-  async function chooseImage() {
+  async function pickImage(source: 'gallery' | 'camera') {
     try {
-      const permissions = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!permissions.granted) return Alert.alert('Photo permission', 'Allow access to choose a product photo.');
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'], quality: 0.55, allowsEditing: true, base64: true,
-      });
-      if (!result.canceled && result.assets[0]) {
-        const a = result.assets[0];
-        if (!a.base64) return Alert.alert('Photo', 'Could not read the selected image. Try another one.');
-        setPickedImage({ uri: a.uri, base64: a.base64, mimeType: a.mimeType || 'image/jpeg' });
+      if (source === 'camera') {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) return Alert.alert('Camera permission', 'Allow camera access to take a product photo.');
       }
+      // The system gallery picker needs no storage permission, so it is not gated here.
+      const options: ImagePicker.ImagePickerOptions = {
+        mediaTypes: ['images'], quality: 0.8, allowsEditing: true, aspect: [4, 3],
+      };
+      const result = source === 'camera'
+        ? await ImagePicker.launchCameraAsync(options)
+        : await ImagePicker.launchImageLibraryAsync(options);
+      if (result.canceled || !result.assets[0]) return;
+      const asset = result.assets[0];
+      const small = await ImageManipulator.manipulateAsync(
+        asset.uri, [{ resize: { width: Math.min(asset.width || 800, 800) } }],
+        { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: true });
+      if (!small.base64) return Alert.alert('Photo', 'Could not read the selected image. Try another one.');
+      setPickedImage({ uri: small.uri, base64: small.base64, mimeType: 'image/jpeg' });
     } catch (e) { Alert.alert('Photo', errorText(e)); }
   }
+  function removePhoto() { setPickedImage(null); setKeptImage(''); updateDraft('imageUrl', ''); }
   async function submitProduct() {
-    if (!user || profile?.role !== 'shopkeeper') return;
+    if (!user || profile?.role !== 'shopkeeper' || needsVerification()) return;
     const price = Number(draft.price), stock = Number(draft.stock);
     if (!draft.name.trim() || !draft.materials.trim() || !Number.isFinite(price) || price <= 0 ||
       !Number.isInteger(stock) || stock < 0) {
       return Alert.alert('Product details', 'Enter a name, raw materials, positive price and non-negative whole-number stock.');
     }
     if (draft.imageUrl.trim() && !/^https:\/\//i.test(draft.imageUrl.trim())) {
-      return Alert.alert('Product photo', 'Use an HTTPS image URL, or choose a photo to upload.');
+      return Alert.alert('Product photo', 'Use an HTTPS image URL, or take / choose a photo.');
     }
     setBusy(true);
     try {
-      let imageUrl = draft.imageUrl.trim();
-      if (pickedImage) {
-        // Image upload requires Firebase Storage to be enabled on the project,
-        // with the storage.rules deployed. HTTPS image URLs remain an alternative.
-        const path = 'product-images/' + user.uid + '/' + Date.now() + '.jpg';
-        const fileRef = storageRef(getStorage(), path);
-        await uploadString(fileRef, pickedImage.base64, 'base64', { contentType: pickedImage.mimeType });
-        imageUrl = await getDownloadURL(fileRef);
-      }
+      const existing = editId ? products.find(p => p.id === editId) : undefined;
+      const imageUrl = pickedImage ? await uploadProductImage(user.uid, pickedImage)
+        : draft.imageUrl.trim() || keptImage;
       await saveProduct({
         name: draft.name.trim(), description: draft.description.trim(),
         materials: draft.materials.trim(), category: draft.category.trim() || 'Handmade',
         price, stock, sellerId: user.uid, seller: ownShop?.name || profile.name,
-        dzongkhag: draft.dzongkhag.trim(), imageUrl, active: true,
+        dzongkhag: draft.dzongkhag.trim(), imageUrl, active: existing ? existing.active : true,
       }, editId || undefined);
-      setShowProductForm(false); setPickedImage(null); setEditId(null); setDraft(emptyDraft);
+      setShowProductForm(false); setPickedImage(null); setKeptImage(''); setEditId(null); setDraft(emptyDraft);
       Alert.alert('Saved', editId ? 'Product updated successfully.' : 'Your product is now listed.');
     } catch (e) {
-      Alert.alert('Unable to save product', errorText(e) +
-        (pickedImage ? '\n\nIf Firebase Storage is unavailable, remove the selected photo and use a public HTTPS image URL instead.' : ''));
+      Alert.alert('Unable to save product', errorText(e));
     } finally { setBusy(false); }
   }
   function toggleListing(p: Product) {
+    if (needsVerification()) return;
     Alert.alert(p.active ? 'Remove listing?' : 'Restore listing?',
       p.active ? 'The product will be hidden from customers; existing reservations are retained.' : 'Show this product again?',
       [{ text: 'Cancel', style: 'cancel' }, { text: p.active ? 'Remove' : 'Restore',
@@ -384,6 +503,7 @@ export default function Home() {
             <Button title="Shopkeeper" secondary={role !== 'shopkeeper'} onPress={() => setRole('shopkeeper')} /></View>
           {register && <Field label="Your full name" value={fullName} onChange={setFullName} />}
           {register && role === 'shopkeeper' && <Field label="Shop name" value={initialShopName} onChange={setInitialShopName} />}
+          {register && role === 'shopkeeper' && renderIdForm()}
           <Field label="Email address" keyboardType="email-address" value={email} onChange={setEmail} />
           <Field label="Password" secure value={password} onChange={setPassword} />
           <Button title={busy ? 'Please wait…' : register ? 'Create account' : 'Log in'} disabled={busy} onPress={authenticate} />
@@ -417,6 +537,7 @@ export default function Home() {
             <Text style={styles.title}>{p.name}</Text>
             <Text style={styles.price}>Nu. {p.price.toFixed(2)}</Text>
             <Text style={styles.muted}>{p.category} · {p.dzongkhag || 'Bhutan'} · {p.seller}</Text>
+            {approvedIds.includes(p.sellerId) && <Text style={styles.verifiedText}>✓ Verified shop</Text>}
             <Text style={styles.price}>{ratingSummary(reviews, p.sellerId).count
               ? '★ ' + ratingSummary(reviews, p.sellerId).average.toFixed(1) + '/5 (' + ratingSummary(reviews, p.sellerId).count + ' shop reviews)'
               : 'Shop not rated yet'}</Text>
@@ -433,9 +554,15 @@ export default function Home() {
         {tab === 'My products' && profile.role === 'shopkeeper' && <>
           <Text style={styles.title}>Manage your products</Text>
           <Text style={styles.muted}>Add, edit, remove or restore your listings.</Text>
-          <Button title={showProductForm ? 'Close product form' : '+ Add a product'}
-            onPress={() => showProductForm ? setShowProductForm(false) : startCreate()} />
-          {showProductForm && <View style={styles.card}>
+          {!verified && <View style={styles.notice}>
+            <Text style={styles.body}>{idSubmitted
+              ? 'Your ID is waiting for approval. You can add products once the administrator verifies your shop.'
+              : 'Verify your shop first: submit your CID number and ID photo in the My shop tab.'}</Text>
+            <Button secondary title="Go to My shop" onPress={() => setTab('My shop')} />
+          </View>}
+          {verified && <Button title={showProductForm ? 'Close product form' : '+ Add a product'}
+            onPress={() => showProductForm ? setShowProductForm(false) : startCreate()} />}
+          {verified && showProductForm && <View style={styles.card}>
             <Text style={styles.title}>{editId ? 'Edit product' : 'New product'}</Text>
             <Field label="Product name" value={draft.name} onChange={v => updateDraft('name', v)} />
             <Field label="Raw materials / ingredients" value={draft.materials} onChange={v => updateDraft('materials', v)} multiline />
@@ -445,9 +572,14 @@ export default function Home() {
             <Field label="Quantity in stock" value={draft.stock} keyboardType="numeric" onChange={v => updateDraft('stock', v)} />
             <Field label="Dzongkhag" value={draft.dzongkhag} onChange={v => updateDraft('dzongkhag', v)} />
             <Field label="Photo URL (HTTPS; optional)" value={draft.imageUrl} onChange={v => updateDraft('imageUrl', v)} />
-            <Button secondary title="Choose a photo from phone" onPress={chooseImage} />
-            {(pickedImage?.uri || draft.imageUrl) && <ProductPicture url={pickedImage?.uri || draft.imageUrl} />}
-            <Text style={styles.muted}>Phone photo uploads require Firebase Storage. An HTTPS image URL also works.</Text>
+            <View style={styles.row}>
+              <Button secondary title="📷 Take a photo" onPress={() => pickImage('camera')} />
+              <Button secondary title="🖼 Choose from gallery" onPress={() => pickImage('gallery')} />
+            </View>
+            {(pickedImage?.uri || draft.imageUrl || keptImage) &&
+              <ProductPicture url={pickedImage?.uri || draft.imageUrl || keptImage} />}
+            {!!(pickedImage || draft.imageUrl || keptImage) && <Button secondary title="Remove photo" onPress={removePhoto} />}
+            <Text style={styles.muted}>Photos are resized automatically before saving. You can also paste an HTTPS image URL above.</Text>
             <Button disabled={busy} title={busy ? 'Saving…' : editId ? 'Save changes' : 'Publish product'} onPress={submitProduct} />
             <Button secondary title="Cancel" onPress={() => setShowProductForm(false)} />
           </View>}
@@ -482,6 +614,7 @@ export default function Home() {
           {visibleShops.length === 0 && <Text style={styles.muted}>No shops found for this selection.</Text>}
           {visibleShops.map(s => <View style={styles.card} key={s.id}>
             <Text style={styles.title}>{s.name}</Text>
+            {approvedIds.includes(s.id) && <Text style={styles.verifiedText}>✓ Verified shop</Text>}
             <Text style={styles.muted}>{s.address || s.dzongkhag || 'Address not provided'}</Text>
             {s.distance !== undefined && <Text style={styles.price}>{s.distance.toFixed(1)} km away (straight-line)</Text>}
             <Text style={styles.body}>Hours: {s.openTime}–{s.closeTime} · {isShopOpen(s) ? 'Open by schedule' : 'Closed by schedule'}</Text>
@@ -537,6 +670,21 @@ export default function Home() {
 
         {tab === 'My shop' && profile.role === 'shopkeeper' && <>
           <Text style={styles.title}>Shop profile and hours</Text>
+          <View style={styles.card}>
+            <Text style={styles.title}>Shop verification</Text>
+            {verified
+              ? <Text style={styles.verifiedText}>✓ Verified shop. You can list and manage products.</Text>
+              : idSubmitted
+                ? <>
+                  <Text style={styles.body}>Waiting for approval. Your CID number and ID photo were submitted. You can list products once the administrator verifies your shop.</Text>
+                  <Info title="Your shop ID (the administrator may ask for this)" detail={user.uid} />
+                </>
+                : <>
+                  <Text style={styles.body}>Submit your CID number and a photo of your ID so the administrator can verify your shop.</Text>
+                  {renderIdForm()}
+                  <Button disabled={busy} title={busy ? 'Submitting…' : 'Submit for verification'} onPress={submitVerification} />
+                </>}
+          </View>
           {user && <View style={styles.card}><ShopReviews shopId={user.uid} reviews={reviews} /></View>}
           <Text style={styles.muted}>Customers see your shop's public details, opening hours and saved map position.</Text>
           <View style={styles.card}>
@@ -553,8 +701,8 @@ export default function Home() {
               onChange={v => setShopForm(s => ({ ...s, closedDays: v }))} />
             <Info title="Saved shop coordinates" detail={ownShop?.latitude !== undefined
               ? String(ownShop.latitude) + ', ' + String(ownShop.longitude) : 'Not set yet'} />
-            {coordinates && <Text style={styles.muted}>Selected GPS: {coordinates.latitude.toFixed(5)}, {coordinates.longitude.toFixed(5)}</Text>}
-            <Button secondary title="Use my current position for shop" onPress={locate} />
+            {shopPin && <Text style={styles.muted}>New GPS (not saved yet): {shopPin.latitude.toFixed(5)}, {shopPin.longitude.toFixed(5)}</Text>}
+            <Button secondary title="Use my current position for shop" onPress={locateShop} />
             <Text style={styles.muted}>Choose the position while physically at the shop, then save it as a fixed location.</Text>
             <Button title={busy ? 'Saving…' : 'Save shop information'} disabled={busy} onPress={updateShop} />
           </View>
@@ -608,7 +756,8 @@ const styles = StyleSheet.create({
   tabText: { color: ink, fontWeight: '700', fontSize: 12 },
   placeholder: { alignItems: 'center', justifyContent: 'center', borderRadius: 12,
     backgroundColor: '#F1EBE5', gap: 4 },
-  notice: { padding: 12, backgroundColor: '#FFF1CF', borderRadius: 10 },
+  notice: { padding: 12, backgroundColor: '#FFF1CF', borderRadius: 10, gap: 8 },
+  verifiedText: { color: '#2F6B3F', fontWeight: '700', fontSize: 13 },
   logout: { padding: 10 },
   map: { width: '100%', height: 300, borderRadius: 15, marginTop: 5 },
   reviewSection: { marginTop: 10, paddingTop: 12, borderTopWidth: 1, borderTopColor: line, gap: 8 },

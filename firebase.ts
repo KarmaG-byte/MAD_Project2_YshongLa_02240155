@@ -1,5 +1,6 @@
 import { initializeApp, getApp, getApps } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 import { initializeAuth, getAuth, getReactNativePersistence } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -23,6 +24,9 @@ export const firebaseConfigured = Boolean(
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 export const db = getFirestore(app);
+export const storage = getStorage(app);
+// Fail fast (instead of retrying for 10 minutes) when Storage is not set up for the project.
+storage.maxUploadRetryTime = 15000;
 
 let authInstance;
 try {

@@ -8,6 +8,7 @@ import { db } from '../firebase';
 export type Role = 'customer' | 'shopkeeper';
 export type Profile = {
   id: string; name: string; email: string; role: Role; shopName?: string;
+  cidNumber?: string; hasIdPhoto?: boolean;
 };
 export type Product = {
   id: string; name: string; description: string; materials: string; category: string;
@@ -35,7 +36,8 @@ export function normalizeProfile(uid: string, raw: DocumentData): Profile {
   const roleValue = asString(raw.role || raw.userType || raw.type).toLowerCase();
   const role: Role = roleValue === 'shopkeeper' || roleValue === 'seller' || raw.isShopkeeper === true ? 'shopkeeper' : 'customer';
   return { id: uid, name: asString(raw.name || raw.fullName || raw.displayName) || 'Member',
-    email: asString(raw.email), role, shopName: asString(raw.shopName) };
+    email: asString(raw.email), role, shopName: asString(raw.shopName),
+    cidNumber: asString(raw.cidNumber), hasIdPhoto: asString(raw.cidImageUri).length > 0 };
 }
 export function normalizeProduct(id: string, raw: DocumentData): Product {
   return {
@@ -66,23 +68,13 @@ export function normalizeBooking(id: string, raw: DocumentData): Booking {
     quantity: numeric(raw.quantity, 1), unitPrice: numeric(raw.unitPrice ?? raw.price),
     status: (raw.status === 'Collected' ? 'collected' : raw.status || 'pending') as Booking['status'] };
 }
-export function distanceKm(aLat: number, aLng: number, bLat: number, bLng: number): number {
-  const rad = Math.PI / 180;
-  const dLat = (bLat - aLat) * rad, dLng = (bLng - aLng) * rad;
-  const q = Math.sin(dLat / 2) ** 2 + Math.cos(aLat * rad) * Math.cos(bLat * rad) * Math.sin(dLng / 2) ** 2;
-  return 6371 * 2 * Math.atan2(Math.sqrt(q), Math.sqrt(1 - q));
-}
-export function isShopOpen(shop: Shop, now = new Date()): boolean {
-  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  if (shop.closedDays.toLowerCase().split(',').map(s => s.trim()).includes(days[now.getDay()].toLowerCase())) return false;
-  const hhmm = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
-  return hhmm >= shop.openTime && hhmm < shop.closeTime;
-}
+export { distanceKm, isShopOpen } from './shopHours';
 export async function saveProduct(input: Omit<Product, 'id'>, currentId?: string) {
   if (!input.sellerId || !input.name.trim() || !Number.isFinite(input.price) || input.price <= 0
     || !Number.isInteger(input.stock) || input.stock < 0 || !input.materials.trim()) {
     throw new Error('Provide a product name, raw materials, positive price and valid stock.');
   }
+  if (input.imageUrl.length > 700_000) throw new Error('That photo is too large to store. Choose a smaller photo.');
   const data = { ...input, schemaVersion: 2, name: input.name.trim(), updatedAt: serverTimestamp() };
   if (currentId) {
     const target = doc(db, 'products', currentId);

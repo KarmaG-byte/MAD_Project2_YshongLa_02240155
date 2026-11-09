@@ -22,6 +22,14 @@ service cloud.firestore {
         && exists(userPath(request.auth.uid))
         && get(userPath(request.auth.uid)).data.role == 'customer';
     }
+    // A shopkeeper may publish or edit TshongLa 2 products only after the administrator has
+    // approved them. Approval = a document verifiedShopkeepers/{uid} with approved == true,
+    // created by hand in the Firebase Console (nobody can write it from the app).
+    function approvedSeller(uid) {
+      return seller(uid)
+        && exists(/databases/$(database)/documents/verifiedShopkeepers/$(uid))
+        && get(/databases/$(database)/documents/verifiedShopkeepers/$(uid)).data.approved == true;
+    }
     function v2Product(data) { return data.get('schemaVersion', 1) == 2; }
     function v2Booking(data) { return data.get('schemaVersion', 1) == 2; }
     function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
@@ -196,7 +204,7 @@ service cloud.firestore {
         && request.resource.data.sellerId == request.auth.uid
       ) || (
         v2Product(request.resource.data)
-        && seller(request.auth.uid)
+        && approvedSeller(request.auth.uid)
         && request.resource.data.sellerId == request.auth.uid
         && validProduct(request.resource.data)
       );
@@ -216,7 +224,7 @@ service cloud.firestore {
       ) || (
         // TshongLa 2 listings are editable only by the matching shopkeeper.
         v2Product(resource.data) && v2Product(request.resource.data)
-        && seller(request.auth.uid)
+        && approvedSeller(request.auth.uid)
         && resource.data.sellerId == request.auth.uid
         && request.resource.data.sellerId == resource.data.sellerId
         && validProduct(request.resource.data)
@@ -263,6 +271,12 @@ service cloud.firestore {
         && get(bookingPath(request.resource.data.bookingId)).data.productId == request.resource.data.productId
         && get(bookingPath(request.resource.data.bookingId)).data.status == 'Collected';
       allow update, delete: if false;
+    }
+    match /verifiedShopkeepers/{uid} {
+      // Signed-in users may see which shops are verified (for the "Verified shop" badge).
+      // Writes are impossible from the app; the administrator edits this in the Console.
+      allow read: if signedIn();
+      allow write: if false;
     }
     match /{document=**} {
       allow read, write: if false;
